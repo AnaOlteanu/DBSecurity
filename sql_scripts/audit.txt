@@ -1,0 +1,286 @@
+----------------------------------
+--a. auditare standard
+----------------------------------
+
+--se va configura baza de date pentru audit standard cu stocarea datelor despre auditri in cadrul bazei de date
+--se vor monitoriza toate activitatile de interogare efectuate in baza de date cu stocarea textului cererilor efectuate de catre utilizatori
+
+select value from v$parameter where name='audit_trail';
+
+show con_name;
+
+alter session set container=cdb$root;
+
+--datele despre auditari vor fi stocate la nivelul bazei de date
+alter system set audit_trail=db,extended scope=spfile;
+
+--verificam auditul activ
+select audit_option, success, failure from dba_stmt_audit_opts;
+
+select value from v$parameter where name='audit_trail';
+--a trebuit sa opresc instanta Oracle din SQL*PLUS cu comanda shutdown immediate; , dupa care am repornit-o prin comanda startup;, 
+--pentru ca modificarea valorii parametrului audit_trail sa aiba efect
+select value from v$parameter where name='audit_trail';
+--value va fi DB, EXTENDED
+
+desc dba_stmt_audit_opts;
+
+select audit_option, success, failure from dba_stmt_audit_opts;
+
+
+--ne mutam pe conexiunea orclpdb si deschidem bd pluggable
+alter session set container=orclpdb;
+alter pluggable database orclpdb open;
+
+audit select table;
+
+select audit_option, success, failure from dba_stmt_audit_opts;
+
+--am rulat comenzile ca utilizator user1
+--select * from cont;
+--select * from card;
+--select * from cont
+--where data_emitere > sysdate - 30 and data_emitere < sysdate; 
+--select * from cont
+--where data_creare > sysdate - 30 and data_creare < sysdate; 
+--select count(*)
+--from cont
+--where sold > 7000;
+
+--sa se afiseze comenzile SELECT efectuate asupra tabelelor CARD si CONT
+select obj$creator, obj$name, userid, sqltext, ntimestamp#
+from aud$
+where upper(obj$name) in  ('CARD', 'CONT')
+order by obj$name;
+
+--sa se afiseze numarul de comenzi SELECT efectuate asupra tabelelor CONT si CARD:
+--de fiecare utilizator, pentru fiecare tabel
+--de fiecare utilizator, indiferent de tabel
+--indiferent de utilizator si tabel
+
+select userid, obj$creator, obj$name, count(*)
+from aud$
+where upper(obj$name) in ('CONT','CARD')
+group by rollup (userid, (obj$creator, obj$name));
+
+--oprire audit
+noaudit select table;
+
+select audit_option, success, failure from dba_stmt_audit_opts;
+
+--auditare asupra comenzilor LMD insert, update, delete pe tabelul CONT doar atunci cand comanda esueaza
+audit insert, update, delete on user1.cont whenever not successful;
+
+--verificam auidtul activ
+select object_name, object_type, owner, sel, ins, upd, del from dba_obj_audit_opts
+where lower(object_name) = 'cont';
+
+--am rulat comanda
+--insert into CONT (id_cont, id_tip_cont, id_tip_status, IBAN, data_creare, sold) values (1, 1, 1, 'SN26732036098651', '12-Sep-2018', 299);
+
+desc aud$;
+
+select obj$creator, obj$name, userid, sqltext, ntimestamp#
+from aud$
+where upper(obj$name) in  ('CONT');
+
+noaudit all;
+
+-------------------------------
+--b. triggeri de auditare
+-------------------------------
+
+set serveroutput on;
+
+drop table tab_audit_client;
+create table tab_audit_client (
+  id_secv number(4) primary key,
+  user_ varchar2(20),
+  session_ number(10),
+  host_ varchar2(100),
+  timp date,
+  delta_records number(5));
+  
+drop sequence secv_audit_client;
+create sequence secv_audit_client start with 1 increment by 1;
+
+--am creat 2 triggeri care vor stoca intr-un tabel de audit (TAB_AUDIT_CLIENT) informatii despre operatiile LMD de inserare pe tabelul CLIENT
+-- cat si despre numarul total de inregistrari dupa efectuarea inserarii
+
+create or replace trigger audit_client_before
+before insert on user1.client
+declare
+  nr_inreg_before number;
+begin
+  select count(*) into nr_inreg_before from user1.client;
+  
+  dbms_output.put_line('Nr inregistrari inainte de inserare: ' || nr_inreg_before);
+  
+  insert into tab_audit_client values(secv_audit_client.nextval, sys_context('userenv', 'session_user'),
+                       sys_context('userenv', 'sessionid'), sys_context('userenv', 'host'),
+                       sysdate, nr_inreg_before);
+end;
+/
+
+
+create or replace trigger audit_client_after
+after insert on user1.client
+declare
+  nr_inreg_after number;
+  nr_inreg_before number;
+  current_session varchar2(100);
+  id_rec_audit number;
+begin
+    select count(*) into nr_inreg_after from user1.client;
+  
+    dbms_output.put_line('Nr inregistrari dupa inserare: ' || nr_inreg_after);
+  
+    select sys_context('userenv', 'sessionid') into current_session from dual;
+  
+    select max(id_secv) into id_rec_audit from tab_audit_client where session_ = current_session;
+      
+    select delta_records into nr_inreg_before from tab_audit_client
+    where id_secv = id_rec_audit;
+      
+    update tab_audit_client
+    set delta_records = nr_inreg_after
+    where id_secv = id_rec_audit;
+    
+end;
+/
+
+drop trigger audit_client_after;
+drop trigger audit_client_before;
+
+desc user_triggers;
+select trigger_name, trigger_type, status
+from user_triggers
+where lower(trigger_name) like '%audit_client%';
+
+--am adaugat o inregistrare noua in tabelul CLIENT
+--insert into CLIENT (id_client, id_banca, nume, prenume, data_nastere, CNP) values (100, 40, 'James', 'Cohen', '20-Sep-1999', '1622949279576');
+--commit;
+--initial erau 50 de inregistrari in tabela CLIENT, iar acum sunt 51, dupa cum se reflecta si in coloana delta_records din tabelul TAB_AUDIT_CLIENT
+
+select * from tab_audit_client;
+
+select t.*, to_char(timp, 'dd/mm/yyyy hh24:mi:ss') as Ora 
+from sys.tab_audit_client t;
+
+
+--am creat un trigger care inregistreaza in acelasi tabel TAB_AUDIT_CLIENT:
+--valoarea 1 atunci cand este modificat un client cu data de nastere dupa anul 2000 
+--valoarea -1 atunci cand este sters un client cu data de nastere dupa anul 2000
+
+create or replace trigger data_client
+after delete or update on user1.client
+for each row
+begin
+
+    if UPDATING and :new.data_nastere > '01-JAN-2000' then
+        insert into tab_audit_client values (secv_audit_client.nextval, sys_context('userenv', 'session_user'),
+                       sys_context('userenv', 'sessionid'), sys_context('userenv', 'host'), sysdate, 1);
+                       
+    elsif DELETING and :old.data_nastere > '01-JAN-2000' then
+        insert into tab_audit_client values (secv_audit_client.nextval, sys_context('userenv', 'session_user'),
+                       sys_context('userenv', 'sessionid'), sys_context('userenv', 'host'), sysdate, -1);
+    end if;
+end;
+/
+
+--s-au executat comenzile care decalnseaza triggerul data_client
+--insert into CLIENT (id_client, id_banca, nume, prenume, data_nastere, CNP) values (101, 40, 'Maria', 'Olteanu', '20-Sep-2000', '1622949279576');
+--commit;
+--
+--update client
+--set id_banca = 10
+--where id_client = 101;
+--commit;
+--
+--delete from client
+--where id_client = 101;
+--commit;
+--drop trigger data_client;
+
+select t.*, to_char(timp, 'dd/mm/yyyy hh24:mi:ss') as Ora 
+from sys.tab_audit_client t;
+
+
+
+--------------------------------
+--c. politici de auditare
+--------------------------------
+
+--am creat o politica de auditare prin care se inregistreaza instructiunile LMD de modificare a soldului unui cont
+--pe tabelul CONT
+
+
+create or replace procedure proc_audit_alert (object_schema varchar2, object_name varchar2, 
+                                              policy_name varchar2)
+as
+begin
+  dbms_output.put_line('Incercare modificare sold cont');
+end;
+/
+
+create or replace procedure proc_audit_sold as
+begin
+  dbms_fga.add_policy(
+    object_schema => 'USER1',
+    object_name => 'CONT',
+    policy_name => 'policy_sold_cont',
+    enable => false,
+    statement_types => 'UPDATE',
+    handler_module => 'PROC_AUDIT_ALERT');
+end;
+/
+
+desc all_audit_policies;
+
+execute proc_audit_sold;
+
+select object_schema, object_name, policy_name, enabled
+from all_audit_policies;
+
+
+begin
+  dbms_fga.enable_policy(object_schema => 'USER1',
+    object_name => 'CONT',
+    policy_name => 'policy_sold_cont');
+end;
+/
+
+--am rulat comand de update pe tabelul CONT
+--select sold
+--from cont
+--where id_cont = 1;
+--
+--update cont
+--set sold = 100
+--where id_cont = 1;
+
+select db_user, userhost, policy_name, to_char(timestamp, 'dd/mm/yyyy hh24:mi:ss') Time, sql_text
+from dba_fga_audit_trail
+order by timestamp desc;
+
+begin
+  dbms_fga.disable_policy(object_schema => 'USER1',
+    object_name => 'CONT',
+    policy_name => 'policy_sold_cont');
+end;
+/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

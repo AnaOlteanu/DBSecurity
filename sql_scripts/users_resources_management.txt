@@ -1,0 +1,241 @@
+--creare utilizatori
+--utilizator admin
+
+create user bank_admin identified by parolaadmin password expire;
+grant create session to bank_admin;
+
+--utilizator reprezentanti serviciu pentru clienti
+create user bank_consultant1 identified by parolaconstultant password expire;
+grant create session to bank_consultant1;
+
+create user bank_consultant2 identified by parolaconstultant password expire;
+grant create session to bank_consultant2;
+
+--utilizatori clienti
+create user bank_client1 identified by parolaclient password expire;
+grant create session to bank_client1;
+
+create user bank_client2 identified by parolaclient password expire;
+grant create session to bank_client2;
+
+create user bank_client3 identified by parolaclient password expire;
+grant create session to bank_client3;
+
+
+--utilizator personal de marketing
+create user bank_marketing identified by parolamarketing password expire;
+grant create session to bank_marketing;
+
+--utilizator personal de detectare a fraudelor
+create user bank_frauda identified by parolafrauda password expire;
+grant create session to bank_frauda;
+
+select username, account_status, expiry_date
+from dba_users where lower(username) like '%bank%' ;
+
+--trigger pentru auditul conectarii la baza de date
+
+desc v$session;
+select USERNAME, status, osuser
+from v$session
+where username like '%bank%';
+
+drop sequence bank_seq_conex;
+create sequence bank_seq_conex start with 1 increment by 1;
+
+--drop table bank_audit_conex;
+create table bank_audit_conex (
+  id_conex number(6) primary key,
+  user_ varchar2(30),
+  session_ number(8),
+  auth_meth varchar2(40),
+  identity_ varchar2(100),
+  host_ varchar2(30),
+  login_time date,
+  logout_time date);
+  
+create or replace trigger bank_audit_conex_trigger
+after logon on database
+begin
+  if user like '%bank%' then
+     insert into bank_audit_conex 
+     values(bank_seq_conex.nextval, user, sys_context('userenv', 'sessionid'),
+            sys_context('userenv', 'authentication_method'),
+            sys_context('userenv', 'authenticated_identity'),
+            sys_context('userenv', 'host'), sysdate, null);
+     commit;       
+  end if;
+end;
+/
+
+create or replace trigger bank_audit_deconex_trigger
+before logoff on database
+begin
+  if user like '%bank%' then
+    update bank_audit_conex
+    set logout_time = sysdate
+    where user_ = user
+    and session_ = sys_context('userenv', 'sessionid');
+    commit;
+  end if;
+end;
+/
+
+select t.*, to_char(login_time, 'dd/mm/yyyy hh24:mi:ss') as "Ora login",
+            to_char(logout_time, 'dd/mm/yyyy hh24:mi:ss')as "Ora logout"
+from bank_audit_conex t;
+
+--alocarea cotelor de spatiu de stocare al tablespace-ului USERS pentru toti utilizatorii
+
+alter user bank_admin quota unlimited on users;
+alter user bank_consultant1 quota 3M on users;
+alter user bank_consultant2 quota 3M on users;
+alter user bank_client1 quota 0M on users;
+alter user bank_client2 quota 0M on users;
+alter user bank_client3 quota 0M on users;
+alter user bank_marketing quota 0M on users;
+alter user bank_frauda quota 1M on users;
+
+desc dba_ts_quotas;
+select * from dba_ts_quotas
+where username like '%BANK%';
+
+--crearea profilurilor de utilizatori
+
+--pentru utilizatorii reprezentanti ai serviciului pentru clienti si clienti, consumul de CPU per apel sa nu depaseasca 60 de secunde,
+--sa aiba dreptul la o singura sesiune la un moment dat, timpul de viata al parolei sa fie de 20 zile si sa poata gresi parola de maxim 5 ori
+
+create profile bank_profil_consultant_client limit
+  cpu_per_call 6000
+  sessions_per_user 1
+  password_life_time 20
+  failed_login_attempts 5;
+
+
+--pentru utilizatorii din personalul de marketing si vanzari, numarul maxim de conexiuni permise sa fie 2, 
+--timpul maxim de inactivitate permis sa fie de 2 minute, iar timpul total de conectare sa nu depaseasca 10 minute chiar in perioadele de activitate
+
+create profile bank_profil_marketing limit
+  sessions_per_user 2
+  idle_time 2
+  connect_time 10;
+
+
+--pentru utilizatorii din personalul de detectare a fraudelor, numarul maxim de conexiuni permise sa fie 2,
+--timpul maxim de inactivitate permis sa fie de 3 minute, timpul de viata al parolei sa fie de 14 zile si sa poata gresi parola de maxim 3 ori
+
+create profile bank_profil_frauda limit
+  sessions_per_user 2
+  idle_time 3
+  password_life_time 20
+  failed_login_attempts 3;
+
+select * from dba_profiles where lower(profile) like '%bank%';
+
+--atribuire profiluri pentru useri
+alter user bank_consultant1 profile bank_profil_consultant_client; 
+alter user bank_consultant2 profile bank_profil_consultant_client; 
+alter user bank_client1 profile bank_profil_consultant_client; 
+alter user bank_client2 profile bank_profil_consultant_client; 
+alter user bank_client3 profile bank_profil_consultant_client; 
+alter user bank_marketing profile bank_profil_marketing;
+alter user bank_frauda profile bank_profil_frauda;
+
+show parameter resource_limit;
+alter system set resource_limit=true;
+
+
+
+alter user bank_admin identified by parolaadmin account unlock;
+alter user bank_consultant1 identified by parolaconsultant account unlock;
+alter user bank_consultant2 identified by parolaconsultant account unlock;
+alter user bank_client1 identified by parolaclient account unlock;
+alter user bank_client2 identified by parolaclient account unlock;
+alter user bank_client3 identified by parolaclient account unlock;
+alter user bank_marketing identified by parolamarketing account unlock;
+alter user bank_frauda identified by parolafrauda account unlock;
+
+select username, account_status, expiry_date
+from dba_users where lower(username) like '%bank%' ;
+
+--------------------------------------------------------------------
+--configurarea unui plan de resurse cu urmatoarele reguli:
+--vor exista 4 grupuri de consum:
+--management(bank_admin)
+--consultanta(bank_consultant)
+--clienti(bank_client)
+--other_departments (bank_marketing, bank_frauda)
+
+show con_name;
+alter session set container=orclpdb;
+
+
+CREATE OR REPLACE PROCEDURE bank_plan_consum AS 
+  N NUMBER :=0; 
+BEGIN  
+  DBMS_RESOURCE_MANAGER.CREATE_PENDING_AREA(); 
+  DBMS_RESOURCE_MANAGER.CREATE_PLAN(PLAN => 'BANK_plan1',
+                    COMMENT => 'Acesta este un plan pentru sistemul de banking'); 
+  --grupuri de consum  
+  DBMS_RESOURCE_MANAGER.CREATE_CONSUMER_GROUP(CONSUMER_GROUP => 'management', COMMENT => 'Acesta grupeaza sesiunile utilizatorilor care administreaza aplicatia');     
+  DBMS_RESOURCE_MANAGER.CREATE_CONSUMER_GROUP(CONSUMER_GROUP => 'consultanta', COMMENT => 'Acesta grupeaza sesiunile utilizatorilor care ofera consultanta'); 
+  DBMS_RESOURCE_MANAGER.CREATE_CONSUMER_GROUP(CONSUMER_GROUP => 'clienti', COMMENT => 'Acesta grupeaza sesiunile utilizatorilor care primesc consultanta'); 
+  DBMS_RESOURCE_MANAGER.CREATE_CONSUMER_GROUP(CONSUMER_GROUP => 'other_departments', COMMENT => 'Acesta grupeaza sesiunile utilizatorilor din departamenele de marketing si detectare fraude'); 
+ 
+  --se va crea doar daca nu exista deja            
+  SELECT COUNT(*) INTO n 
+  FROM DBA_RSRC_CONSUMER_GROUPS 
+  WHERE CONSUMER_GROUP='OTHER_GROUPS';  
+  
+  IF n=0 THEN   
+    DBMS_RESOURCE_MANAGER.CREATE_CONSUMER_GROUP(CONSUMER_GROUP => 'OTHER_GROUPS', COMMENT => 'Acesta grupeaza RESTUL LUMII');  
+  END IF; 
+ 
+  --mapari statice utilizatori pe grupuri consum, nu pot fi mapati pe grupul OTHER_GROUPS  
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_admin', 'management');  
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_consultant1', 'consultanta');  
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_consultant2', 'consultanta');  
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_client1', 'clienti'); 
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_client2', 'clienti');
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_client3', 'clienti');
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_marketing', 'other_departments');  
+  DBMS_RESOURCE_MANAGER.SET_CONSUMER_GROUP_MAPPING(DBMS_RESOURCE_MANAGER.ORACLE_USER, 'bank_frauda', 'other_departments');  
+ 
+  --directivele de plan pentru fiecare grup de consum  
+  DBMS_RESOURCE_MANAGER.CREATE_PLAN_DIRECTIVE(PLAN => 'BANK_plan1', GROUP_OR_SUBPLAN => 'management', 
+                              COMMENT => 'directiva de plan pt gr management', MGMT_P1 => 20); 
+  DBMS_RESOURCE_MANAGER.CREATE_PLAN_DIRECTIVE(PLAN => 'BANK_plan1', GROUP_OR_SUBPLAN => 'consultanta',        
+                              COMMENT => 'directiva de BANK_plan1 pt gr consultanta', MGMT_P1 => 30);    
+  DBMS_RESOURCE_MANAGER.CREATE_PLAN_DIRECTIVE(PLAN => 'BANK_plan1', GROUP_OR_SUBPLAN => 'clienti',        
+                              COMMENT => 'directiva de plan pt gr clienti', MGMT_P1 => 30); 
+  DBMS_RESOURCE_MANAGER.CREATE_PLAN_DIRECTIVE(PLAN => 'BANK_plan1', GROUP_OR_SUBPLAN => 'other_departments',        
+                              COMMENT => 'directiva de plan pt gr departamentul de marketing si frauda', MGMT_P1 => 10); 
+  DBMS_RESOURCE_MANAGER.CREATE_PLAN_DIRECTIVE(PLAN => 'BANK_plan1', GROUP_OR_SUBPLAN => 'OTHER_GROUPS',        
+                              COMMENT => 'directiva de plan pt gr alte grupuri', MGMT_P1 => 10); 
+ 
+  DBMS_RESOURCE_MANAGER.VALIDATE_PENDING_AREA();  
+  DBMS_RESOURCE_MANAGER.SUBMIT_PENDING_AREA(); 
+
+END; 
+/
+
+execute bank_plan_consum;
+
+desc dba_rsrc_consumer_groups;
+select * from dba_rsrc_consumer_groups
+order by consumer_group;
+
+desc dba_users;
+
+select username, INITIAL_RSRC_CONSUMER_GROUP
+from dba_users
+where lower(username) like '%bank%';
+
+desc dba_rsrc_plan_directives;
+
+select distinct u.username, d.group_or_subplan, d.mgmt_p1, plan
+from dba_rsrc_plan_directives d 
+left join dba_users u on (d.group_or_subplan = u.INITIAL_RSRC_CONSUMER_GROUP)
+order by u.username nulls last;
+
+

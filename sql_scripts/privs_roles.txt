@@ -1,0 +1,248 @@
+------------------
+--CONECTAT CA SYS
+------------------
+
+show con_name;
+
+alter session set container=orclpdb;
+alter pluggable database orclpdb open;
+
+GRANT CREATE SESSION TO bank_admin;
+GRANT CREATE TABLE TO bank_admin;
+GRANT CREATE ANY TABLE TO bank_admin;
+GRANT CREATE ANY INDEX TO bank_admin;
+GRANT CREATE VIEW TO bank_admin;
+GRANT CREATE ROLE TO bank_admin;
+GRANT CREATE PROCEDURE TO bank_admin;
+
+select owner, object_name from all_objects where owner like '%BANK%';
+
+SELECT * FROM DBA_TAB_PRIVS
+where owner like 'BANK_ADMIN'
+and grantee like 'BANK_CLIENT1';
+
+SELECT * FROM DBA_role_privs WHERE grantee like '%BANK%';
+
+
+--------------------------
+--CONECTAT CA BANK_ADMIN
+--------------------------
+
+--administratorul bancii are dreptul de a crea orice tabel din orice alta schema
+
+--administratorul bancii este responsabil de inserarea datelor in tabelele ORAS, TARA, BANCA, TIP_CONT, TIP_CARD, STATUS
+
+--creare + inserare tabele
+
+-----------------------------------------
+--PRIVILEGII CONSULTANT
+--reprezentantii serviciului pt clienti bank_consultant1 si bank_consultant2 vor avea acces la toate tabelele din schema adminului,
+--pentru a obtine informatiile necesare despre un client al bancii
+--in plus, vor primi dreptul de a insera, actualiza si sterge datele despre clienti, conturi si carduri
+------------------------------------------
+
+GRANT SELECT ON bank_admin.tara to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.oras to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.banca to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.client to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.client_cont to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.cont to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.tip_cont to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.card to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.tip_card to bank_consultant1, bank_consultant2;
+GRANT SELECT ON bank_admin.status to bank_consultant1, bank_consultant2;
+
+GRANT INSERT, UPDATE, DELETE ON bank_admin.client to bank_consultant1, bank_consultant2;
+GRANT INSERT, UPDATE, DELETE ON bank_admin.cont to bank_consultant1, bank_consultant2;
+GRANT INSERT, UPDATE, DELETE ON bank_admin.client_cont to bank_consultant1, bank_consultant2;
+GRANT INSERT, UPDATE, DELETE ON bank_admin.card to bank_consultant1, bank_consultant2;
+
+--au fost inserate date in tabelele CLIENT, CONT, CLIENT_CONT, CARD de catre bank_consultant1
+select * from client
+order by id_banca;
+
+--------------------------------------------------------
+--PRIVILEGII CLIENT
+--------------------------------------------------------
+
+GRANT SELECT ON bank_admin.tip_cont to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.tip_card to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.status to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.banca to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.oras to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.tara to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.card to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.cont to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.client_cont to bank_client1, bank_client2, bank_client3;
+GRANT SELECT ON bank_admin.client to bank_client1, bank_client2, bank_client3;
+
+
+
+-- TABEL CARD
+CREATE TABLE bank_client1.Card (
+    id_card int NOT NULL,
+    id_tip_card int NOT NULL,
+    id_tip_status int NOT NULL,
+    id_cont int NOT NULL,
+    numar varchar2(100) NOT NULL,
+    data_emitere date NOT NULL,
+    data_expirare date NOT NULL,
+    cvc varchar2(100) NOT NULL,
+    pin varchar2(100) NOT NULL,
+    CONSTRAINT Card_pk PRIMARY KEY (id_card)
+);
+
+-- TABEL CLIENT
+CREATE TABLE bank_client1.Client (
+    id_client int NOT NULL,
+    id_banca int NOT NULL,
+    nume varchar(128) NOT NULL,
+    prenume varchar(128) NOT NULL,
+    data_nastere date NOT NULL,
+    CNP varchar(13) NOT NULL,
+    CONSTRAINT Client_pk PRIMARY KEY (id_client)
+);
+
+-- TABEL CLIENT_CONT
+CREATE TABLE bank_client1.Client_cont (
+    id_client int NOT NULL ,
+    id_cont int NOT NULL,
+    titular varchar(2) NOT NULL,
+    CONSTRAINT Client_cont_pk PRIMARY KEY (id_client,id_cont)
+);
+
+-- TABEL CONT
+CREATE TABLE bank_client1.Cont (
+    id_cont int NOT NULL,
+    id_tip_cont int NOT NULL,
+    id_tip_status int NOT NULL,
+    IBAN varchar(100) NOT NULL,
+    data_creare date NOT NULL,
+    sold int NOT NULL,
+    CONSTRAINT Cont_pk PRIMARY KEY (id_cont)
+);
+
+
+--Clientul va primi dreptul de a-si modifica codul pin de la card
+
+create role update_pin_card;
+grant update(pin) on bank_admin.card to update_pin_card;
+
+desc role_tab_privs;
+select * from role_tab_privs
+where role='UPDATE_PIN_CARD';
+
+grant update_pin_card to bank_client1;
+grant update_pin_card to bank_client2;
+grant update_pin_card to bank_client3;
+
+
+----------------------------------------------------------------
+--PRIVILEGII DEPARTAMENT MARKETING SI DETECTAREA FRAUDELOR
+--personalul din aceste doua departamente au acces la toate tabelele din schema, pentru a intocmi diverse rapoarte de interes 
+--in plus, utilizatorul bank_frauda va putea actualiza statusul unui cont suspect de frauda in 'BLOCAT'
+---------------------------------------------------------------
+--se va crea o procedura in schema adminului care va fi apelata de catre bank_frauda, prin care se va actualiza statusul contului unui client
+
+
+create role access_access_other_departments;
+GRANT SELECT ON bank_admin.tip_cont to access_other_departments;
+GRANT SELECT ON bank_admin.tip_card to access_other_departments;
+GRANT SELECT ON bank_admin.status to access_other_departments;
+GRANT SELECT ON bank_admin.banca to access_other_departments;
+GRANT SELECT ON bank_admin.oras to access_other_departments;
+GRANT SELECT ON bank_admin.tara to access_other_departments;
+GRANT SELECT ON bank_admin.card to access_other_departments;
+GRANT SELECT ON bank_admin.cont to access_other_departments;
+GRANT SELECT ON bank_admin.client_cont to access_other_departments;
+GRANT SELECT ON bank_admin.client to access_other_departments;
+
+grant access_other_departments to bank_marketing, bank_frauda;
+
+create role change_status;
+grant update(id_tip_status) on bank_admin.cont to change_status;
+
+grant change_status to bank_frauda;
+
+create or replace procedure actualizare_status_cont(p_id_cont number)
+as
+    
+begin
+    update bank_admin.cont
+    set id_tip_status = (select s.id_tip_status
+                        from bank_admin.status s
+                        where s.denumire like 'BLOCAT')
+    where id_cont = p_id_cont;
+                        
+end;
+/
+
+grant execute on actualizare_status_cont to bank_frauda;
+
+
+-------------------------------
+--IERARHIA PRIVILEGIILOR
+-------------------------------
+--utilizatorii bank_consultant1 si bank_consultant2 au dreptul de actualizare asupra intregului tabel CARD. Se creeaza un rol prin care
+--nu i se mai permite consultantului sa actualizeze coloana pin
+
+create role update_card_consultant;
+grant update(id_card, id_tip_status, id_tip_card, cvc, numar, data_emitere, data_expirare) on bank_admin.card to update_card_consultant;
+
+grant update_card_consultant to bank_consultant1;
+grant update_card_consultant to bank_consultant2;
+
+
+revoke update on bank_admin.card from update_card_consultant;
+
+
+
+----------------------------
+--CONECTAT CA BANK_CLIENT1
+----------------------------
+
+select * from session_privs;
+select * from session_roles;
+select * from user_tab_privs;
+select * from user_col_privs;
+
+--update pin
+update bank_admin.card
+set id_tip_card = 2
+where id_card = 1;
+
+update bank_admin.card
+set pin = '1234'
+where id_card = 1;
+
+
+
+-----------------------------
+--CONECTAT CA BANK_CONSULTANT
+-----------------------------
+
+select * from session_privs;
+select * from session_roles;
+select * from user_tab_privs;
+select * from user_col_privs;
+
+select * from bank_admin.card;
+
+update bank_admin.card
+set pin = '9999'
+where id_card = 2;
+
+
+rollback;
+
+----------------------------
+--CONECTAT CA BANK_FRAUDA
+----------------------------
+
+select * from session_roles;
+
+execute bank_admin.actualizare_status_cont(1);
+
+select * from bank_admin.cont
+where id_cont = 1;
+

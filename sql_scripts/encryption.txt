@@ -1,0 +1,168 @@
+--sys as sysdba
+
+grant execute on dbms_crypto to user1;
+
+-------------------------------------------------------------
+
+--Urmeaza a fi criptate datele sensibile pentru modelul proiectat. 
+--Pentru criptare se va folosi algoritmul simetric AES, cu padding PKCS5 si metoda de chaining ECB  
+--Coloanele vizate pentru criptare sunt:
+--IBAN din tabela CONT
+--numar, cvc, pin din tabela CARD
+
+--cheile de criptare vor fi retinute intr-un tabel separat (tabel_chei_banca), in aceeasi baza de date, la nivel de inregistrare
+
+drop sequence secv_id_cheie;
+drop table tabel_chei_banca;
+
+create sequence secv_id_cheie start with 1 increment by 1;
+
+create table tabel_chei_banca(
+  id_cheie number constraint pk_tabel_chei primary key,
+  cheie raw(16) not null,
+  nume_tabel varchar2(30) not null);
+  
+
+--voi crea o procedura prin care sa inserez cate o cheie de criptare pentru fiecare din tabelele CONT, respectiv CARD
+
+create or replace procedure inserare_chei_criptare(p_nume_tabel varchar2)
+as
+    cheie_secreta raw(16);
+    nr_chei NUMBER(5);
+begin
+    cheie_secreta := dbms_crypto.randombytes(16);
+  
+    select count(*) into nr_chei
+    from tabel_chei_banca
+    where UPPER(nume_tabel) = UPPER(p_nume_tabel);
+    
+    if nr_chei = 0 then
+        insert into tabel_chei_banca values(secv_id_cheie.nextval, cheie_secreta, p_nume_tabel);
+    end if;
+    
+end;
+/
+
+begin
+    inserare_chei_criptare('CONT');
+    inserare_chei_criptare('CARD');
+end;
+/
+
+select * from tabel_chei_banca;
+
+--voi crea 2 proceduri prin care voi cripta coloanele mentionate anterior, cate o procedura pentru fiecare tabel in cauza
+
+---------------------------------
+--TABELUL CONT
+---------------------------------
+
+----trebuie modificat tipul de date pentru coloana iban. initial era varchar2(50)  
+--alter table cont
+--modify
+--(
+--   iban varchar2(100)
+--);
+
+set serveroutput on;
+
+create or replace procedure criptare_cont 
+as
+  cheie_secreta raw(16);
+  mod_operare pls_integer; 
+  cursor c_cont is select iban, id_cont from cont;
+  iban_raw raw(100);
+  rezultat_iban raw(100);
+  
+begin
+  
+  select cheie into cheie_secreta
+  from tabel_chei_banca
+  where UPPER(nume_tabel) = UPPER('CONT');
+  
+  dbms_output.put_line('Cheia de criptare pt tabelul CONT este ' || cheie_secreta);
+  
+  mod_operare := dbms_crypto.encrypt_aes128 + dbms_crypto.pad_pkcs5 + dbms_crypto.chain_cbc;
+  
+  for rec in c_cont loop
+     iban_raw := utl_i18n.string_to_raw(rec.iban, 'AL32UTF8');
+     
+     if length(iban_raw) < 64 then
+         rezultat_iban := dbms_crypto.encrypt(iban_raw, mod_operare, cheie_secreta);
+         
+         update cont
+         set iban = rezultat_iban
+         where id_cont = rec.id_cont;
+     end if;
+     
+  end loop;
+  
+  commit;  
+end;
+/
+
+begin
+    criptare_cont();
+end;
+/
+
+select * from cont;
+
+select length(iban)
+from cont;
+
+
+---------------------------------------
+--TABELUL CARD
+---------------------------------------
+
+
+create or replace procedure criptare_card
+as
+  cheie_secreta raw(16);
+  mod_operare pls_integer; 
+  cursor c_card is select id_card, numar, cvc, pin from card;
+  v_numar_raw raw(100);
+  v_cvc_raw raw(100);
+  v_pin_raw raw(100);
+  rezultat_numar raw(100);
+  rezultat_cvc raw(100);
+  rezultat_pin raw(100);
+  
+begin
+  
+  select cheie into cheie_secreta
+  from tabel_chei_banca
+  where UPPER(nume_tabel) = UPPER('CARD');
+  
+  dbms_output.put_line('Cheia de criptare pt tabelul CARD este ' || cheie_secreta);
+  
+  mod_operare := dbms_crypto.encrypt_aes128 + dbms_crypto.pad_pkcs5 + dbms_crypto.chain_cbc;
+  
+  for rec in c_card loop
+     v_numar_raw := utl_i18n.string_to_raw(rec.numar, 'AL32UTF8');
+     v_cvc_raw  := utl_i18n.string_to_raw(rec.cvc, 'AL32UTF8');
+     v_pin_raw := utl_i18n.string_to_raw(rec.pin, 'AL32UTF8');
+     
+     if length(v_numar_raw) < 64 then 
+     
+         rezultat_numar := dbms_crypto.encrypt(v_numar_raw, mod_operare, cheie_secreta);
+         rezultat_cvc := dbms_crypto.encrypt(v_cvc_raw, mod_operare, cheie_secreta);
+         rezultat_pin := dbms_crypto.encrypt(v_pin_raw, mod_operare, cheie_secreta);
+         
+         update card
+         set numar = rezultat_numar, cvc = rezultat_cvc, pin = rezultat_pin
+         where id_card = rec.id_card;
+     
+     end if;
+     
+  end loop;
+  
+  commit;  
+end;
+/
+
+begin
+    criptare_card();
+end;
+/
